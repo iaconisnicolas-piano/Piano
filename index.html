@@ -139,6 +139,7 @@ h1 .dots i+i{background:var(--lh)}
 .s-meta{color:var(--muted);font-size:.82rem}
 .file-btn{cursor:pointer}
 .seg button:disabled{opacity:.4;cursor:default}
+.sel{font:inherit;font-weight:700;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);max-width:100%;min-width:0}
 .num{width:4.2em;font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)}
 .s-main{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px}
 .s-top{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
@@ -277,11 +278,10 @@ h1 .dots i+i{background:var(--lh)}
     <div class="row">
       <label class="btn primary file-btn" for="s-file">Abrir partitura…</label>
       <input type="file" id="s-file" accept=".mid,.midi,.xml,.musicxml,.mxl" hidden>
-      <span class="lbl-s">Ejemplos</span>
-      <div class="seg" id="s-samples">
-        <button data-v="0" aria-pressed="false">Estrellita</button>
-        <button data-v="1" aria-pressed="false">Oda a la alegría</button>
-      </div>
+      <label class="lbl-s" for="s-sample">Temas y ejercicios</label>
+      <select id="s-sample" class="sel"></select>
+      <button class="btn" id="s-prev" aria-label="Tema anterior">◀</button>
+      <button class="btn" id="s-next">Siguiente ▶</button>
       <div class="s-head"><span class="s-title" id="s-title"></span><span class="s-meta" id="s-meta"></span></div>
     </div>
     <div class="row">
@@ -743,34 +743,112 @@ function buildEvents(notes){const map=new Map();
     if(!e[nt.hand].includes(nt.m)){e[nt.hand].push(nt.m);e['n'+nt.hand].push(nt);}});
   return[...map.values()].sort((a,b)=>a.t-b.t);}
 
-/* Ejemplos: se escriben como MusicXML, con acordes cifrados */
+/* Temas y ejercicios: se escriben como MusicXML, con acordes cifrados.
+   Notación interna: unidad = corchea (1), negra = 2, blanca = 4, redonda = 8, semicorchea = 0.5; "-" es silencio; "+" une notas de un acorde. */
 function pitchXML(m){return '<pitch><step>'+'CCDDEFFGGAAB'[m%12]+'</step>'+([1,3,6,8,10].includes(m%12)?'<alter>1</alter>':'')+'<octave>'+(Math.floor(m/12)-1)+'</octave></pitch>';}
-const NTYPE={1:['eighth',0],2:['quarter',0],3:['quarter',1],4:['half',0],6:['half',1],8:['whole',0]};
-const VOX={C:'C3+E3+G3',F:'C3+F3+A3',G:'B2+D3+G3',G7:'B2+F3+G3',Am:'C3+E3+A3',Dm:'D3+F3+A3',Em:'B2+E3+G3'};
-function makeXML(title,bpm,rSpec,hSpec){
-  const H=hSpec.split('|').map(s=>s.trim().split(/\s+/));
-  const lSpec=H.map(cs=>cs.map(c=>VOX[c]+':'+(8/cs.length)).join(' ')).join(' ');
+const NTYPE={0.5:['16th',0],1:['eighth',0],1.5:['eighth',1],2:['quarter',0],3:['quarter',1],4:['half',0],6:['half',1],8:['whole',0],12:['whole',1]};
+const VOX={C:'C3+E3+G3',F:'C3+F3+A3',G:'B2+D3+G3',G7:'B2+F3+G3',Am:'C3+E3+A3',Dm:'D3+F3+A3',Em:'B2+E3+G3',
+  D:'A2+D3+F#3',D7:'A2+C3+F#3',A:'A2+C#3+E3',A7:'A2+C#3+G3',Bm:'B2+D3+F#3','F#m':'A2+C#3+F#3',E:'B2+E3+G#3',E7:'B2+D3+G#3'};
+function chordSym(sym){const mm=sym.match(/^([A-G])([#b]?)(.*)$/);return{step:mm[1],alt:mm[2]==='#'?1:mm[2]==='b'?-1:0,q:mm[3],pc:(STEP[mm[1]]+(mm[2]==='#'?1:mm[2]==='b'?-1:0)+12)%12};}
+function voicing(sym){if(VOX[sym])return VOX[sym].split('+').map(n);const c=chordSym(sym);const iv=(CH[{dim:'dis',aug:'aum'}[c.q]??c.q]||CH[''])[0];return iv.map(i=>48+((c.pc+i)%12)).sort((a,b)=>a-b);}
+function rootBelow(sym){const v=voicing(sym),pc=chordSym(sym).pc;let r=Math.min(...v);while(r%12!==pc)r--;return r;}
+/* Mano izquierda generada a partir de los acordes, según el estilo del tema */
+function leftHand(sym,t,dur,style){
+  const out=[],add=(tt,d,ns)=>out.push(ns?{t:tt,dur:d,notes:ns}:{t:tt,dur:d,rest:true});
+  if(sym==='-'||style==='none'){add(t,dur);return out;}
+  const v=voicing(sym),r=rootBelow(sym);
+  if(style==='bass')add(t,dur,[r]);
+  else if(style==='block')add(t,dur,v);
+  else if(style==='waltz'){if(dur>=4&&dur%2===0){add(t,2,[r]);for(let k=2;k<dur;k+=2)add(t+k,2,v.filter(m=>m!==r));}else add(t,dur,v);}
+  else{const pat=style==='alberti'?[0,2,1,2]:[0,1,2,1];for(let k=0;k<dur;k++)add(t+k,1,[v[pat[k%4]]]);}
+  return out;
+}
+function makeXML(sp){
+  const tm=sp.time||[4,4],MU=tm[0]*8/tm[1],pk=sp.pickup||0,style=sp.style||'block';
   const toks=P=>[...P.items,...P.rests.map(r=>({t:r.t,dur:r.dur,rest:true}))].sort((a,b)=>a.t-b.t);
-  const R=parse(rSpec),L=parse(lSpec),RT=toks(R),LT=toks(L),nM=Math.ceil(Math.max(R.len,L.len)/8);
-  const noteX=(it,staff,voice)=>{const ty=NTYPE[it.dur]||['quarter',0];const tail='<duration>'+it.dur+'</duration><voice>'+voice+'</voice><type>'+ty[0]+'</type>'+(ty[1]?'<dot/>':'')+'<staff>'+staff+'</staff>';
+  const R=parse(sp.r),RT=toks(R);
+  const mStart=i=>pk?(i===0?0:pk+(i-1)*MU):i*MU, mLen=i=>pk&&i===0?pk:MU;
+  let nM=0;while(mStart(nM)<R.len-1e-6)nM++;
+  /* acordes: compases separados por "|"; "C" reparte el compás en partes iguales, "C:4" fija la duración */
+  const HM=sp.h.split('|').map(s=>s.trim().split(/\s+/));const harm=[];
+  for(let i=0;i<nM;i++){const tk=(HM[i]||['-']).map(s=>{const[a,d]=s.split(':');return{s:a,d:d?+d:null};});
+    const fixed=tk.reduce((a,x)=>a+(x.d||0),0),free=tk.filter(x=>!x.d).length;let t=mStart(i);
+    tk.forEach(x=>{const d=x.d||(mLen(i)-fixed)/free;harm.push({t,dur:d,s:x.s});t+=d;});}
+  const LT=sp.l?toks(parse(sp.l)):harm.flatMap(h=>leftHand(h.s,h.t,h.dur,style));
+  const noteX=(it,staff,voice)=>{const ty=NTYPE[it.dur]||['quarter',0];const tail='<duration>'+Math.round(it.dur*2)+'</duration><voice>'+voice+'</voice><type>'+ty[0]+'</type>'+(ty[1]?'<dot/>':'')+'<staff>'+staff+'</staff>';
     return it.rest?'<note><rest/>'+tail+'</note>':it.notes.map((m,i)=>'<note>'+(i?'<chord/>':'')+pitchXML(m)+tail+'</note>').join('');};
-  const harmX=sym=>{const mm=sym.match(/^([A-G])(.*)$/);const k={'':'major','m':'minor','7':'dominant'}[mm[2]]||'major';
-    return '<harmony><root><root-step>'+mm[1]+'</root-step></root><kind text="'+mm[2]+'">'+k+'</kind></harmony>';};
-  let x='<?xml version="1.0" encoding="UTF-8"?><score-partwise version="3.1"><work><work-title>'+title+'</work-title></work><part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list><part id="P1">';
-  for(let mi=0;mi<nM;mi++){const a=mi*8,b=a+8;x+='<measure number="'+(mi+1)+'">';
-    if(mi===0)x+='<attributes><divisions>2</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves><clef number="1"><sign>G</sign><line>2</line></clef><clef number="2"><sign>F</sign><line>4</line></clef></attributes><direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>'+bpm+'</per-minute></metronome></direction-type><sound tempo="'+bpm+'"/></direction>';
-    const hs=(H[mi]||[]).map((s,i,arr)=>({s,pos:a+i*8/arr.length}));
-    RT.filter(it=>it.t>=a&&it.t<b).forEach(it=>{hs.filter(h=>h.pos===it.t).forEach(h=>x+=harmX(h.s));x+=noteX(it,1,1);});
-    x+='<backup><duration>8</duration></backup>';
-    LT.filter(it=>it.t>=a&&it.t<b).forEach(it=>x+=noteX(it,2,5));
+  const harmX=sym=>{const c=chordSym(sym);const k={'':'major','m':'minor','7':'dominant','m7':'minor-seventh','maj7':'major-seventh','dim':'diminished'}[c.q]||'major';
+    return '<harmony><root><root-step>'+c.step+'</root-step>'+(c.alt?'<root-alter>'+c.alt+'</root-alter>':'')+'</root><kind text="'+c.q+'">'+k+'</kind></harmony>';};
+  const done=new Set();
+  let x='<?xml version="1.0" encoding="UTF-8"?><score-partwise version="3.1"><work><work-title>'+sp.title+'</work-title></work><part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list><part id="P1">';
+  for(let mi=0;mi<nM;mi++){const a=mStart(mi),b=a+mLen(mi);
+    x+='<measure number="'+(pk?mi:mi+1)+'"'+(pk&&mi===0?' implicit="yes"':'')+'>';
+    if(mi===0)x+='<attributes><divisions>4</divisions><key><fifths>'+(sp.key||0)+'</fifths></key><time><beats>'+tm[0]+'</beats><beat-type>'+tm[1]+'</beat-type></time><staves>2</staves><clef number="1"><sign>G</sign><line>2</line></clef><clef number="2"><sign>F</sign><line>4</line></clef></attributes><direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>'+sp.bpm+'</per-minute></metronome></direction-type><sound tempo="'+sp.bpm+'"/></direction>';
+    const hs=harm.filter(h=>h.t>=a-1e-6&&h.t<b-1e-6&&h.s!=='-');
+    const emitH=t=>hs.forEach(h=>{if(!done.has(h)&&Math.abs(h.t-t)<1e-6){done.add(h);x+=harmX(h.s);}});
+    RT.filter(it=>it.t>=a-1e-6&&it.t<b-1e-6).forEach(it=>{emitH(it.t);x+=noteX(it,1,1);});
+    x+='<backup><duration>'+Math.round(mLen(mi)*2)+'</duration></backup>';
+    LT.filter(it=>it.t>=a-1e-6&&it.t<b-1e-6).forEach(it=>{emitH(it.t);x+=noteX(it,2,5);});
     if(mi===nM-1)x+='<barline location="right"><bar-style>light-heavy</bar-style></barline>';
     x+='</measure>';}
   return x+'</part></score-partwise>';
 }
+const LEVELS=['Nivel 1 · Primeros pasos','Nivel 2 · Acordes en bloque','Nivel 3 · Más movimiento','Nivel 4 · Clásicos'];
 const SAMPLES=[
-  {title:'Estrellita',bpm:90,r:'C4:2 C4:2 G4:2 G4:2 A4:2 A4:2 G4:4 F4:2 F4:2 E4:2 E4:2 D4:2 D4:2 C4:4 G4:2 G4:2 F4:2 F4:2 E4:2 E4:2 D4:4 G4:2 G4:2 F4:2 F4:2 E4:2 E4:2 D4:4 C4:2 C4:2 G4:2 G4:2 A4:2 A4:2 G4:4 F4:2 F4:2 E4:2 E4:2 D4:2 D4:2 C4:4',
-   h:'C | F C | F C | G C | C F | C G | C F | C G | C | F C | F C | G C'},
-  {title:'Oda a la alegría',bpm:80,r:EX[6].r,h:'C | G | C | G | C | G | C | G C'}
+ {lv:0,title:'Escala de Do (mano derecha)',bpm:80,style:'none',h:'- | - | - | -',
+  r:'C4:2 D4:2 E4:2 F4:2 G4:2 A4:2 B4:2 C5:2 B4:2 A4:2 G4:2 F4:2 E4:2 D4:2 C4:4',
+  tip:'Digitación: 1-2-3 (Do-Re-Mi), pasá el pulgar por debajo para tocar Fa con el 1 y seguí 1-2-3-4-5. Bajando, cruzá el 3 por arriba sobre el Mi.'},
+ {lv:0,title:'A la luz de la luna',bpm:90,style:'bass',
+  r:'C4:2 C4:2 C4:2 D4:2 E4:4 D4:4 C4:2 E4:2 D4:2 D4:2 C4:8 C4:2 C4:2 C4:2 D4:2 E4:4 D4:4 C4:2 E4:2 D4:2 D4:2 C4:8 D4:2 D4:2 D4:2 D4:2 A3:4 A3:4 D4:2 C4:2 B3:2 A3:2 G3:8 C4:2 C4:2 C4:2 D4:2 E4:4 D4:4 C4:2 E4:2 D4:2 D4:2 C4:8',
+  h:'C | C G | C G | C | C | C G | C G | C | G | Am | G | G | C | C G | C G | C',
+  tip:'Canción francesa. La izquierda toca solo la nota más grave de cada acorde: la fundamental.'},
+ {lv:0,title:'Mary tenía un corderito',bpm:100,style:'bass',
+  r:'E4:2 D4:2 C4:2 D4:2 E4:2 E4:2 E4:4 D4:2 D4:2 D4:4 E4:2 G4:2 G4:4 E4:2 D4:2 C4:2 D4:2 E4:2 E4:2 E4:2 E4:2 D4:2 D4:2 E4:2 D4:2 C4:8',
+  h:'C | C | G | C | C | C | G | C',tip:'Derecha con los dedos 1-2-3 sobre Do-Re-Mi, sin mover la mano. La izquierda alterna Do y Sol.'},
+ {lv:0,title:'Martinillo',bpm:100,style:'bass',
+  r:'C4:2 D4:2 E4:2 C4:2 C4:2 D4:2 E4:2 C4:2 E4:2 F4:2 G4:4 E4:2 F4:2 G4:4 G4:1 A4:1 G4:1 F4:1 E4:2 C4:2 G4:1 A4:1 G4:1 F4:1 E4:2 C4:2 C4:2 G3:2 C4:4 C4:2 G3:2 C4:4',
+  h:'C | C | C | C | C | C | C | C',tip:'Aparecen las primeras corcheas (compases 5 y 6): contalas “uno-y, dos-y”.'},
+ {lv:1,title:'Estrellita',bpm:90,style:'block',r:'C4:2 C4:2 G4:2 G4:2 A4:2 A4:2 G4:4 F4:2 F4:2 E4:2 E4:2 D4:2 D4:2 C4:4 G4:2 G4:2 F4:2 F4:2 E4:2 E4:2 D4:4 G4:2 G4:2 F4:2 F4:2 E4:2 E4:2 D4:4 C4:2 C4:2 G4:2 G4:2 A4:2 A4:2 G4:4 F4:2 F4:2 E4:2 E4:2 D4:2 D4:2 C4:4',
+  h:'C | F C | F C | G C | C F | C G | C F | C G | C | F C | F C | G C',tip:'La izquierda toca acordes completos: Do, Fa y Sol, todos cerca para que la mano casi no se mueva.'},
+ {lv:1,title:'Armado de acordes: Do, Fa y Sol',bpm:60,style:'bass',
+  r:'C4+E4+G4:8 C4+F4+A4:8 B3+D4+G4:8 C4+E4+G4:8 C4+E4+G4:4 C4+F4+A4:4 C4+E4+G4:4 B3+D4+G4:4 C4+F4+A4:4 B3+D4+G4:4 C4+E4+G4:8',
+  h:'C | F | G | C | C F | C G | F G | C',tip:'Los tres acordes más usados. Mirá el panel: cada acorde es fundamental + 3ª + 5ª. Fa y Sol van en la posición más cercana a Do.'},
+ {lv:1,title:'Acordes menores: Lam, Rem y Mim',bpm:60,style:'bass',
+  r:'A3+C4+E4:8 A3+D4+F4:8 B3+E4+G4:8 A3+C4+E4:8 C4+E4+G4:4 A3+C4+E4:4 A3+D4+F4:4 B3+D4+G4:4 C4+E4+G4:8',
+  h:'Am | Dm | Em | Am | C Am | Dm G | C',tip:'En los acordes menores la 3ª está un semitono más abajo: suenan más tristes. Compará Do mayor con La menor.'},
+ {lv:1,title:'Escala de Do a dos manos',bpm:70,style:'none',h:'- | - | - | -',
+  r:'C4:2 D4:2 E4:2 F4:2 G4:2 A4:2 B4:2 C5:2 B4:2 A4:2 G4:2 F4:2 E4:2 D4:2 C4:4',
+  l:'C3:2 D3:2 E3:2 F3:2 G3:2 A3:2 B3:2 C4:2 B3:2 A3:2 G3:2 F3:2 E3:2 D3:2 C3:4',
+  tip:'Las dos manos en paralelo. Izquierda: 5-4-3-2-1 y cruzá el 3 por arriba para el La. Los pulgares nunca coinciden: ahí está la dificultad.'},
+ {lv:1,title:'Oda a la alegría',bpm:80,style:'block',r:EX[6].r,h:'C | G | C | G | C | G | C | G C',tip:'Beethoven. Acordes de Do y Sol en la izquierda, uno por compás.'},
+ {lv:1,title:'Jingle Bells',bpm:110,style:'block',
+  r:'E4:2 E4:2 E4:4 E4:2 E4:2 E4:4 E4:2 G4:2 C4:3 D4:1 E4:8 F4:2 F4:2 F4:3 F4:1 F4:2 E4:2 E4:2 E4:1 E4:1 E4:2 D4:2 D4:2 E4:2 D4:4 G4:4 E4:2 E4:2 E4:4 E4:2 E4:2 E4:4 E4:2 G4:2 C4:3 D4:1 E4:8 F4:2 F4:2 F4:3 F4:1 F4:2 E4:2 E4:2 E4:1 E4:1 G4:2 G4:2 F4:2 D4:2 C4:8',
+  h:'C | C | C | C | F | C | G | G7 | C | C | C | C | F | C | G7 | C',tip:'Aparece la negra con puntillo seguida de corchea (“jin-gle all the way”). Aparece Sol7: Sol con una 7ª menor.'},
+ {lv:2,title:'Inversiones: Do, Fa y Sol',bpm:60,style:'bass',
+  r:'C4+E4+G4:4 E4+G4+C5:4 G4+C5+E5:4 E4+G4+C5:4 C4+E4+G4:8 C4+F4+A4:4 F4+A4+C5:4 A4+C5+F5:4 F4+A4+C5:4 C4+F4+A4:8 B3+D4+G4:4 D4+G4+B4:4 G4+B4+D5:4 D4+G4+B4:4 B3+D4+G4:8 C4+E4+G4:8',
+  h:'C | C | C | F | F | F | G | G | G | C',tip:'El mismo acorde en tres posiciones: fundamental, 1ª inversión y 2ª inversión. Las notas no cambian; cambia cuál queda abajo.'},
+ {lv:2,title:'Canon de Pachelbel',bpm:70,key:2,style:'block',
+  r:'F#5:4 E5:4 D5:4 C#5:4 B4:4 A4:4 B4:4 C#5:4 D5:4 C#5:4 B4:4 A4:4 G4:4 F#4:4 G4:4 E4:4 F#4:8',
+  h:'D A | Bm F#m | G D | G A | D A | Bm F#m | G D | G A | D',tip:'Está en Re mayor: Fa y Do son sostenidos (teclas negras). La izquierda repite la famosa ronda de 8 acordes.'},
+ {lv:2,title:'Cumpleaños feliz',bpm:100,time:[3,4],pickup:2,style:'waltz',
+  r:'G4:1.5 G4:0.5 A4:2 G4:2 C5:2 B4:4 G4:1.5 G4:0.5 A4:2 G4:2 D5:2 C5:4 G4:1.5 G4:0.5 G5:2 E5:2 C5:2 B4:2 A4:2 F5:1.5 F5:0.5 E5:2 C5:2 D5:2 C5:6',
+  h:'- | C | G7 | G7 | C | C | F | C:4 G7:2 | C',tip:'Compás de 3/4 y empieza con anacrusa (antes del primer compás). Izquierda de vals: bajo y después acorde dos veces, “um-pa-pa”.'},
+ {lv:2,title:'Arpegios: Do, Fa, Sol, Lam y Rem',bpm:70,style:'bass',
+  r:'C4:1 E4:1 G4:1 C5:1 G4:1 E4:1 C4:2 C4:1 F4:1 A4:1 C5:1 A4:1 F4:1 C4:2 B3:1 D4:1 G4:1 B4:1 G4:1 D4:1 B3:2 C4:1 E4:1 G4:1 C5:1 E5:2 C5:2 A3:1 C4:1 E4:1 A4:1 E4:1 C4:1 A3:2 D4:1 F4:1 A4:1 D5:1 A4:1 F4:1 D4:2 B3:1 D4:1 G4:1 B4:1 G4:1 D4:1 B3:2 C4:1 E4:1 G4:1 C5:1 C5:4',
+  h:'C | F | G | C | Am | Dm | G | C',tip:'El acorde desplegado nota por nota con la derecha, en corcheas parejas. Dedos 1-2-3-5 subiendo.'},
+ {lv:2,title:'Noche de paz',bpm:70,time:[3,4],style:'waltz',
+  r:'G4:3 A4:1 G4:2 E4:6 G4:3 A4:1 G4:2 E4:6 D5:4 D5:2 B4:6 C5:4 C5:2 G4:6 A4:4 A4:2 C5:3 B4:1 A4:2 G4:3 A4:1 G4:2 E4:6 A4:4 A4:2 C5:3 B4:1 A4:2 G4:3 A4:1 G4:2 E4:6 D5:4 D5:2 F5:3 D5:1 B4:2 C5:6 E5:6 C5:3 G4:1 E4:2 G4:3 F4:1 D4:2 C4:6',
+  h:'C | C | C | C | G | G | C | C | F | F | C | C | F | F | C | C | G | G7 | C | C | C | G7 | C',tip:'Vals tranquilo en 3/4. La izquierda hace “um-pa-pa” mientras la derecha canta. Muy buena para la independencia.'},
+ {lv:3,title:'Bajo Alberti',bpm:70,style:'alberti',
+  r:'E4:8 F4:8 D4:8 E4:8 E4:8 F4:8 D4:4 F4:4 E4:8',
+  h:'C | F | G | C | Am | Dm | G7 | C',tip:'El acompañamiento clásico de Mozart: abajo-arriba-medio-arriba (Do-Sol-Mi-Sol). Primero practicá la izquierda sola.'},
+ {lv:3,title:'Minueto en Sol',bpm:100,time:[3,4],key:1,style:'waltz',
+  r:'D5:2 G4:1 A4:1 B4:1 C5:1 D5:2 G4:2 G4:2 E5:2 C5:1 D5:1 E5:1 F#5:1 G5:2 G4:2 G4:2 C5:2 D5:1 C5:1 B4:1 A4:1 B4:2 C5:1 B4:1 A4:1 G4:1 F#4:2 G4:1 A4:1 B4:1 G4:1 A4:6 D5:2 G4:1 A4:1 B4:1 C5:1 D5:2 G4:2 G4:2 E5:2 C5:1 D5:1 E5:1 F#5:1 G5:2 G4:2 G4:2 C5:2 D5:1 C5:1 B4:1 A4:1 B4:2 C5:1 B4:1 A4:1 G4:1 A4:2 B4:1 A4:1 G4:1 F#4:1 G4:6',
+  h:'G | G | C | G | C | G | D7 | D | G | G | C | G | C | G | D7 | G',tip:'Del cuaderno de Ana Magdalena Bach (Petzold). En Sol mayor: el Fa es sostenido. Acompañamiento simplificado de vals.'},
+ {lv:3,title:'Para Elisa (comienzo)',bpm:55,time:[3,8],pickup:1,style:'none',
+  r:'E5:0.5 D#5:0.5 E5:0.5 D#5:0.5 E5:0.5 B4:0.5 D5:0.5 C5:0.5 A4:1 -:0.5 C4:0.5 E4:0.5 A4:0.5 B4:1 -:0.5 E4:0.5 G#4:0.5 B4:0.5 C5:1 -:0.5 E4:0.5 E5:0.5 D#5:0.5 E5:0.5 D#5:0.5 E5:0.5 B4:0.5 D5:0.5 C5:0.5 A4:1 -:0.5 C4:0.5 E4:0.5 A4:0.5 B4:1 -:0.5 E4:0.5 C5:0.5 B4:0.5 A4:3',
+  l:'-:1 -:3 A2:0.5 E3:0.5 A3:0.5 -:1.5 E2:0.5 E3:0.5 G#3:0.5 -:1.5 A2:0.5 E3:0.5 A3:0.5 -:1.5 -:3 A2:0.5 E3:0.5 A3:0.5 -:1.5 E2:0.5 E3:0.5 G#3:0.5 -:1.5 A2:0.5 E3:0.5 A3:2',
+  h:'- | - | Am | E | Am | - | Am | E | Am',tip:'Beethoven, en 3/8 y semicorcheas. Las manos se pasan la melodía: la izquierda toca La-Mi-La y la derecha sigue Do-Mi-La. Arrancá muy lento.'}
 ];
 
 let kbS=null,osmd=null,scorePending=false;
@@ -867,9 +945,13 @@ function setPiece(p){
   guideS(S.events[0]);updChord(S.pos);requestAnimationFrame(()=>drawRoll(S.pos));
   sStatus(hasX?'Elegí cómo practicar: “Escuchar”, “Practicar sin apuro” o “Practicar a tempo”.':'Los archivos MIDI no traen la partitura dibujada, así que se muestran como un rollo de notas que bajan hacia el teclado.');
 }
-function loadSample(i){const sp=SAMPLES[i];const xml=makeXML(sp.title,sp.bpm,sp.r,sp.h);const p=parseMusicXML(xml);p.xml=xml;setPiece(p);
-  store.set('ssample',i);[...$('s-samples').children].forEach(b=>b.setAttribute('aria-pressed',+b.dataset.v===i));}
-$('s-samples').onclick=e=>{const b=e.target.closest('button');if(b)loadSample(+b.dataset.v);};
+function loadSample(i){i=Math.max(0,Math.min(SAMPLES.length-1,i));const sp=SAMPLES[i];const xml=makeXML(sp);const p=parseMusicXML(xml);p.xml=xml;setPiece(p);
+  S.sample=i;store.set('ssample',i);$('s-sample').value=String(i);$('s-meta').textContent=LEVELS[sp.lv]+' · '+$('s-meta').textContent;sStatus(sp.tip);}
+(function(){const sel=$('s-sample');let h='<option value="" disabled hidden>Archivo propio</option>';
+  LEVELS.forEach((lv,k)=>{h+='<optgroup label="'+lv+'">';SAMPLES.forEach((sp,i)=>{if(sp.lv===k)h+='<option value="'+i+'">'+(i+1)+'. '+sp.title+'</option>';});h+='</optgroup>';});
+  sel.innerHTML=h;sel.onchange=()=>loadSample(+sel.value);})();
+$('s-prev').onclick=()=>loadSample((S.sample??0)-1);
+$('s-next').onclick=()=>loadSample((S.sample??-1)+1);
 $('s-file').onchange=async e=>{
   const f=e.target.files[0];if(!f)return;e.target.value='';S.stop();sStatus('Abriendo '+f.name+'…');
   try{const ext=f.name.toLowerCase().split('.').pop();let p;
@@ -883,7 +965,7 @@ $('s-file').onchange=async e=>{
     else{const xml=await f.text();p=parseMusicXML(xml);p.xml=xml;}
     if(!p.notes.length)throw new Error('vacio');
     if(!p.title)p.title=f.name.replace(/\.[^.]+$/,'');
-    [...$('s-samples').children].forEach(b=>b.setAttribute('aria-pressed','false'));
+    $('s-sample').value='';S.sample=null;
     setPiece(p);
   }catch(err){sStatus(err.message==='lib'?'No se pudo cargar la herramienta para leer ese tipo de archivo. Revisá la conexión y recargá la página.':
     err.message==='vacio'?'Ese archivo no tiene notas que yo pueda leer.':'No pude leer ese archivo. Probá con un MusicXML (.mxl o .musicxml) o con un MIDI (.mid).','bad');}
